@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
 
+from core.document_encryptor import is_encrypted as _is_encrypted
 from core.orchestrator import (
     create_batch_zip,
     process_batch,
@@ -26,14 +27,14 @@ st.set_page_config(
 
 with st.sidebar:
     st.divider()
-    st.markdown("### 🛡️ Core Data Settings")
-    st.caption("Fields shown in the comparison view.")
+    st.markdown("### 🛡️ Purge Controls")
+    st.caption("Toggle which metadata categories to strip.")
 
-    st.markdown("**Show Metadata Categories:**")
-    show_author = st.checkbox("Author / Creator", value=True)
-    show_dates = st.checkbox("Timestamps (Creation/Modification)", value=True)
-    show_geo = st.checkbox("GPS & Location Data", value=True)
-    show_software = st.checkbox("Software & Hardware Footprints", value=True)
+    st.markdown("**Strip Category:**")
+    strip_author = st.checkbox("Author / Creator / People", value=True)
+    strip_dates = st.checkbox("Timestamps (Creation/Modification)", value=True)
+    strip_geo = st.checkbox("GPS & Location Data", value=True)
+    strip_software = st.checkbox("Software & Device Footprints", value=True)
 
     st.divider()
     st.markdown("**Output Preferences:**")
@@ -41,30 +42,298 @@ with st.sidebar:
     overwrite = st.toggle("Overwrite original names in ZIP", value=False)
 
     st.divider()
+    st.markdown("### 📝 Content Redaction")
+    st.caption("Find & redact sensitive text inside document body.")
+
+    redact_email = st.checkbox("Email addresses", value=True)
+    redact_phone = st.checkbox("Phone numbers", value=True)
+    redact_nin = st.checkbox("National IDs / NIN numbers", value=True)
+    redact_credit_card = st.checkbox("Credit card numbers", value=True)
+    redact_ip = st.checkbox("IP addresses", value=True)
+    redact_api_key = st.checkbox("API keys & tokens", value=False)
+    redact_jwt = st.checkbox("JWT tokens", value=False)
+    redact_confidential = st.checkbox("Confidential context (keyword-based)", value=False)
+    redact_ref_code = st.checkbox("Reference codes (e.g. MOICT/BUD/2026/014)", value=True)
+    redact_currency = st.checkbox("Currency amounts (UGX, USD, etc.)", value=True)
+    redact_high_entropy = st.checkbox("High-entropy strings (passwords/secrets)", value=False)
+    redact_custom_keywords = st.text_input(
+        "Extra confidential keywords (comma-separated)",
+        value="",
+        placeholder="e.g. budget, project-x, codename",
+    )
+
+    st.divider()
+    st.markdown("### 🔐 Document Encryption")
+    encrypt_enabled = st.checkbox("Encrypt document text after anonymization", value=False)
+    encrypt_password = st.text_input(
+        "Encryption password",
+        type="password",
+        placeholder="Enter a strong password",
+        disabled=not encrypt_enabled,
+    )
+
+    st.divider()
     st.caption("🔒 Everything runs locally. No files ever leave your machine.")
 
-bg_color = "#F8FAFC"
-card_bg = "#FFFFFF"
-text_color = "#0F172A"
-border_color = "#E2E8F0"
-sub_text = "#64748B"
+strip_filters = {
+    "author": strip_author,
+    "dates": strip_dates,
+    "geo": strip_geo,
+    "software": strip_software,
+    "redact_email": redact_email,
+    "redact_phone": redact_phone,
+    "redact_nin": redact_nin,
+    "redact_credit_card": redact_credit_card,
+    "redact_ip": redact_ip,
+    "redact_api_key": redact_api_key,
+    "redact_jwt": redact_jwt,
+    "redact_confidential": redact_confidential,
+    "redact_ref_code": redact_ref_code,
+    "redact_currency": redact_currency,
+    "redact_high_entropy": redact_high_entropy,
+    "redact_custom_keywords": redact_custom_keywords,
+    "encrypt_enabled": encrypt_enabled,
+    "encrypt_password": encrypt_password if encrypt_enabled else "",
+}
 
-st.markdown(f"""
+
+st.markdown("""
 <style>
-.stApp {{ background-color: {bg_color} !important; color: {text_color} !important; }}
-h1, h2, h3, h4, h5, p, span, label {{ color: {text_color} !important; }}
-.stMarkdown p {{ color: {text_color} !important; }}
-.compare-card {{
-    background-color: {card_bg};
-    border: 1px solid {border_color};
-    border-radius: 12px;
-    padding: 1.5rem;
-    margin-bottom: 1rem;
-    min-height: 250px;
-}}
-.danger-tag {{ color: #EF4444; font-weight: bold; background: rgba(239,68,68,0.15); padding: 2px 6px; border-radius: 4px; }}
-.success-tag {{ color: #10B981; font-weight: bold; background: rgba(16,185,129,0.15); padding: 2px 6px; border-radius: 4px; }}
-.muted-text {{ color: {sub_text} !important; font-size: 0.85rem; }}
+    :root {
+        --bg: #F8FAFC;
+        --card: #FFFFFF;
+        --text: #0F172A;
+        --text-muted: #64748B;
+        --border: #E2E8F0;
+        --accent: #0D9488;
+        --accent-hover: #14B8A6;
+        --red: #EF4444;
+        --green: #10B981;
+        --red-bg: #FEF2F2;
+        --green-bg: #F0FDF4;
+        --amber-bg: #FFFBEB;
+        --blue-bg: #EFF6FF;
+        --radius: 12px;
+    }
+
+    .stApp {
+        background-color: var(--bg) !important;
+        color: var(--text) !important;
+    }
+
+    section[data-testid="stSidebar"] {
+        background-color: var(--card) !important;
+        border-right: 1px solid var(--border) !important;
+    }
+    section[data-testid="stSidebar"] .stMarkdown,
+    section[data-testid="stSidebar"] p,
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] span {
+        color: var(--text) !important;
+    }
+    section[data-testid="stSidebar"] hr {
+        border-color: var(--border) !important;
+    }
+
+    h1, h2, h3, h4, h5, h6 {
+        color: var(--text) !important;
+        font-weight: 600 !important;
+    }
+    p, span, label, .stMarkdown p {
+        color: var(--text) !important;
+    }
+
+    div[data-testid="stFileUploader"] section {
+        border: 2px dashed #CBD5E1 !important;
+        border-radius: var(--radius) !important;
+        background: var(--card) !important;
+        padding: 2.5rem 1.5rem !important;
+        transition: all 0.2s ease !important;
+    }
+    div[data-testid="stFileUploader"] section:hover {
+        border-color: var(--accent) !important;
+        background: #F0FDFA !important;
+    }
+    div[data-testid="stFileUploader"] small {
+        color: var(--text-muted) !important;
+    }
+
+    .stButton > button {
+        font-weight: 500 !important;
+        border-radius: 8px !important;
+        padding: 0.5rem 1.25rem !important;
+        transition: all 0.15s ease !important;
+        border: 1px solid var(--border) !important;
+        background: var(--card) !important;
+        color: var(--text) !important;
+    }
+    .stButton > button[kind="primary"] {
+        background: var(--accent) !important;
+        border-color: var(--accent) !important;
+        color: white !important;
+        font-weight: 600 !important;
+    }
+    .stButton > button[kind="primary"]:hover {
+        background: var(--accent-hover) !important;
+        border-color: var(--accent-hover) !important;
+        box-shadow: 0 2px 8px rgba(13,148,136,0.3) !important;
+    }
+    div.st-bv {
+        background-color: var(--accent) !important;
+    }
+
+    div[data-testid="stRadio"] label {
+        color: var(--text) !important;
+    }
+    div[data-testid="stRadio"] div[role="radiogroup"] {
+        background: var(--card) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 8px !important;
+        padding: 0.5rem !important;
+    }
+    div[data-testid="stRadio"] input[type="radio"]:checked + div {
+        background-color: var(--accent) !important;
+        color: white !important;
+        border-radius: 6px !important;
+    }
+
+    div[data-testid="stCheckbox"] label {
+        color: var(--text) !important;
+    }
+    div[data-testid="stCheckbox"] input:checked ~ div {
+        background-color: var(--accent) !important;
+        border-color: var(--accent) !important;
+    }
+
+    div[data-testid="stTextInput"] input {
+        background: var(--card) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 8px !important;
+        color: var(--text) !important;
+    }
+
+    div[data-testid="stToggle"] {
+        background: var(--border) !important;
+    }
+    div[data-testid="stToggle"][aria-checked="true"] {
+        background: var(--accent) !important;
+    }
+
+    .stProgress > div > div > div {
+        background-color: var(--accent) !important;
+    }
+    .stProgress > div {
+        background-color: var(--border) !important;
+        border-radius: 4px !important;
+    }
+
+    .stAlert {
+        border-radius: 8px !important;
+        border: none !important;
+    }
+    .stAlert.st-info {
+        background: var(--blue-bg) !important;
+        color: #1E40AF !important;
+    }
+    .stAlert.st-warning {
+        background: var(--amber-bg) !important;
+        color: #92400E !important;
+    }
+    .stAlert.st-success {
+        background: var(--green-bg) !important;
+        color: #065F46 !important;
+    }
+    .stAlert.st-error {
+        background: var(--red-bg) !important;
+        color: #991B1B !important;
+    }
+    .stAlert p {
+        color: inherit !important;
+    }
+
+    div[data-testid="stDownloadButton"] button {
+        background: var(--accent) !important;
+        color: white !important;
+        border: none !important;
+        font-weight: 500 !important;
+    }
+    div[data-testid="stDownloadButton"] button:hover {
+        background: var(--accent-hover) !important;
+        box-shadow: 0 2px 8px rgba(13,148,136,0.3) !important;
+    }
+
+    header[data-testid="stHeader"] {
+        background-color: var(--card) !important;
+        border-bottom: 1px solid var(--border) !important;
+    }
+    header[data-testid="stHeader"] * { color: var(--text) !important; }
+
+
+    .step-nav {
+        display: flex; align-items: center; justify-content: center;
+        gap: 0; margin: 1.5rem 0 2rem 0;
+    }
+    .step-item {
+        display: flex; align-items: center; gap: 0.5rem;
+    }
+    .step-circle {
+        width: 32px; height: 32px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 0.8rem; font-weight: 700;
+        border: 2px solid var(--border);
+        color: var(--text-muted); background: var(--card);
+        transition: all 0.2s ease;
+    }
+    .step-circle.active {
+        border-color: var(--accent); background: var(--accent);
+        color: white; box-shadow: 0 2px 8px rgba(13,148,136,0.3);
+    }
+    .step-circle.done {
+        border-color: var(--green); background: var(--green-bg);
+        color: var(--green);
+    }
+    .step-label {
+        font-size: 0.8rem; font-weight: 500;
+        color: var(--text-muted); white-space: nowrap;
+    }
+    .step-label.active { color: var(--accent); font-weight: 700; }
+    .step-label.done { color: var(--green); }
+    .step-connector {
+        width: 48px; height: 2px; background: var(--border);
+        margin: 0 0.75rem; flex-shrink: 0;
+    }
+    .step-connector.done { background: var(--green); }
+
+    .st-emotion-cache-1mi2ry2,
+    .st-emotion-cache-1r4qj8v,
+    .st-emotion-cache-6qob1r {
+        background-color: var(--card) !important;
+    }
+
+    hr {
+        border-color: var(--border) !important;
+        margin: 1.5rem 0 !important;
+    }
+
+    .compare-card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 1.5rem;
+        min-height: 250px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    }
+    .danger-tag {
+        color: var(--red); font-weight: 600;
+        background: rgba(239,68,68,0.1); padding: 2px 8px; border-radius: 4px;
+    }
+    .success-tag {
+        color: var(--green); font-weight: 600;
+        background: rgba(16,185,129,0.1); padding: 2px 8px; border-radius: 4px;
+    }
+    .muted-text {
+        color: var(--text-muted) !important; font-size: 0.85rem !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -76,6 +345,31 @@ if "temp_dir" not in st.session_state:
 
 st.title("Document Metadata Anonymizer")
 st.markdown("Inspect hidden data, preview sanitization changes side-by-side, and download cleaned files in batches.")
+
+uploaded = st.session_state.get("uploader", None)
+step = 1
+if st.session_state.get("uploader"):
+    step = 2
+if st.session_state.processed:
+    step = 4
+elif st.session_state.get("purge_clicked"):
+    step = 3
+
+steps = ["Upload", "Inspect", "Purge", "Export"]
+step_icons = ["📁", "🔍", "🚀", "📥"]
+
+nav_html = '<div class="step-nav">'
+for i, (s, icon) in enumerate(zip(steps, step_icons), 1):
+    cls = "active" if i == step else ("done" if i < step else "")
+    nav_html += f"""
+        <div class="step-item">
+            <div class="step-circle {cls}">{icon}</div>
+            <span class="step-label {cls}">Step {i}: {s}</span>
+        </div>"""
+    if i < len(steps):
+        nav_html += f'<div class="step-connector {"done" if i < step else ""}"></div>'
+nav_html += "</div>"
+st.markdown(nav_html, unsafe_allow_html=True)
 st.divider()
 
 st.subheader("📁 Step 1: Upload Files")
@@ -158,10 +452,25 @@ if uploaded_files:
             after_html += "</div>"
             st.markdown(after_html, unsafe_allow_html=True)
 
-    st.divider()
-    st.subheader("🚀 Step 3: Run Purge Engine")
+        notices = []
+        if any(k.startswith("redact_") and v for k, v in strip_filters.items() if k not in ("redact_custom_keywords", "encrypt_enabled", "encrypt_password")):
+            notices.append("📝 Content redaction active — sensitive patterns replaced with <code>[REDACTED]</code>")
+        if encrypt_enabled and encrypt_password:
+            notices.append("🔐 Document encryption active — body text will be AES-encrypted after processing")
+        if notices:
+            st.markdown(
+                f'<div style="background:#FFFBEB;padding:0.75rem 1rem;border-radius:8px;margin-top:12px;'
+                f'font-size:0.85rem;border:1px solid #FDE68A;">'
+                + "<br>".join(notices) +
+                '</div>',
+                unsafe_allow_html=True,
+            )
 
-    if st.button("Purge Hidden Metadata Fields", type="primary", use_container_width=True):
+    st.divider()
+    st.subheader("🚀 Step 3: Sanitize & Export")
+
+    if st.button("⚡ Purge All Metadata & Sensitive Content", type="primary", use_container_width=True):
+        st.session_state.purge_clicked = True
         temp_input = tempfile.mkdtemp(prefix="anonymizer_input_")
         output_dir = tempfile.mkdtemp(prefix="anonymizer_output_")
 
@@ -172,31 +481,17 @@ if uploaded_files:
                 f.write(uf.getbuffer())
             file_paths.append(p)
 
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        results = []
+        with st.spinner("Processing..."):
+            results = []
+            for fp in file_paths:
+                r = process_single(fp, output_dir, filters=strip_filters)
+                results.append(r)
 
-        for i, fp in enumerate(file_paths, 1):
-            status_text.text(f"Scrubbing: {os.path.basename(fp)}...")
-            r = process_single(fp, output_dir)
-            results.append(r)
-            progress_bar.progress(int(i / len(file_paths) * 100))
-
-        status_text.empty()
-        progress_bar.empty()
-
-        success_count = sum(1 for r in results if r["success"])
-        fail_count = sum(1 for r in results if not r["success"])
-        st.success(f"Purge Complete! {success_count} file(s) cleaned successfully, {fail_count} failed.")
         st.session_state.processed = True
         st.session_state.results = results
-
         shutil.rmtree(temp_input, ignore_errors=True)
 
     if st.session_state.processed:
-        st.divider()
-        st.subheader("📥 Step 4: Export Clean Files")
-
         success_results = [r for r in st.session_state.results if r["success"]]
         fail_results = [r for r in st.session_state.results if not r["success"]]
 
@@ -210,34 +505,62 @@ if uploaded_files:
                 )
 
         if success_results:
-            down_col1, down_col2 = st.columns(2, gap="medium")
+            st.divider()
+            st.subheader("📥 Download Clean Files")
+            st.caption("Metadata stripped and sensitive content redacted. Files are yours — nothing stored remotely.")
+            if encrypt_enabled and encrypt_password:
+                st.info(
+                    "🔐 Files are AES-encrypted with your password. To decrypt, use the Python script below "
+                    "or run: `python3 -c \"from core.document_encryptor import decrypt_document; "
+                    "decrypt_document('encrypted.docx', 'decrypted.docx', 'YOUR_PASSWORD')\"`"
+                )
 
-            with down_col1:
-                st.info("📦 **Batch Action:** Package all cleaned files together")
-                zip_path = os.path.join(st.session_state.temp_dir, "sanitized_documents_package.zip")
-                create_batch_zip(os.path.dirname(success_results[0]["output_path"]), zip_path)
-                with open(zip_path, "rb") as f:
+            redacted_files = [r for r in success_results if r.get("redaction")]
+            if redacted_files:
+                for r in redacted_files:
+                    rc = r["redaction"]
+                    if rc.get("total", 0) > 0:
+                        details = ", ".join(
+                            f"{k}: {v}" for k, v in sorted(rc.items()) if k != "total" and v > 0
+                        )
+                        st.markdown(
+                            f'<div style="background:#FFFBEB;padding:0.5rem 1rem;border-radius:8px;'
+                            f'margin-bottom:0.3rem;font-size:0.85rem;border:1px solid #FDE68A;">'
+                            f'📝 <b>{r["file"]}</b>: {rc["total"]} item(s) redacted ({details})'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+            zip_path = os.path.join(st.session_state.temp_dir, "sanitized_documents_package.zip")
+            create_batch_zip(os.path.dirname(success_results[0]["output_path"]), zip_path)
+            any_enc = any(
+                _is_encrypted(r["output_path"])
+                for r in success_results
+            )
+            with open(zip_path, "rb") as f:
+                st.download_button(
+                    label="🔐 Download All as ZIP (encrypted)" if any_enc else "📦 Download All as ZIP",
+                    data=f,
+                    file_name="sanitized_documents_package.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                )
+
+            for r in success_results:
+                is_enc = _is_encrypted(r["output_path"])
+                base, ext = os.path.splitext(r["file"])
+                tag = "_encrypted" if is_enc else ""
+                final_name = r["file"] if overwrite else f"{base}{suffix}{tag}{ext}"
+                icon = "🔐 " if is_enc else "⬇ "
+                with open(r["output_path"], "rb") as f:
                     st.download_button(
-                        label="⚡ Download All Files as ZIP Bundle",
+                        label=f"{icon}{final_name}",
                         data=f,
-                        file_name="sanitized_documents_package.zip",
-                        mime="application/zip",
+                        file_name=final_name,
+                        key=f"dl_{final_name}",
                         use_container_width=True,
                     )
 
-            with down_col2:
-                st.warning("📄 **Granular Export:** Download files individually")
-                for r in st.session_state.results:
-                    if r["success"]:
-                        base, ext = os.path.splitext(r["file"])
-                        final_name = r["file"] if overwrite else f"{base}{suffix}{ext}"
-                        with open(r["output_path"], "rb") as f:
-                            st.download_button(
-                                label=f"Download {final_name}",
-                                data=f,
-                                file_name=final_name,
-                                key=f"dl_{final_name}",
-                            )
             st.divider()
             if st.button("Clear & Start Over"):
                 st.session_state.processed = False
