@@ -4,8 +4,7 @@ This is a production-ready, high-fidelity UI prototype for the **Document Metada
 
 ---
 
-## 🎨 UI/UX Features Built-In
-* **Live Theme Engine:** Includes a toggle in the sidebar to switch dynamically between **☀️ Light Theme** and **🌙 Dark Theme** mode layout states.
+## 🎨 UI/UX Features Built-In
 * **Reactive Metadata Blueprint:** Checking or unchecking sidebar options instantly changes the color-coded comparison badges (Red for marked data, Green for stripped/blank state predictions).
 * **Multi-File Processing Flow:** Built specifically to scale and handle single files or entire folders with structural tracking states.
 
